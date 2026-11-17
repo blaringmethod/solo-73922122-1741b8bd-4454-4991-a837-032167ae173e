@@ -44,7 +44,28 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_records_lookup
     ON records (task_id, side, read_id);
+
+CREATE TABLE IF NOT EXISTS trims (
+    id            TEXT PRIMARY KEY,   -- independent of any other trim of the task
+    task_id       TEXT NOT NULL,
+    adapters      TEXT NOT NULL,      -- JSON array of normalized adapters
+    total_pairs   INTEGER NOT NULL,
+    retained_pairs INTEGER NOT NULL,
+    dropped_pairs INTEGER NOT NULL,
+    result_path   TEXT NOT NULL,      -- relative to the task directory
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trims_task ON trims (task_id, created_at);
 """
+
+# Columns added after the initial release. Applied idempotently in init_db so
+# an existing data volume keeps working.
+_MIGRATIONS = {
+    "tasks": {
+        "pair_count": "INTEGER NOT NULL DEFAULT 0",
+    },
+}
 
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 
@@ -85,9 +106,21 @@ def init_db() -> None:
         conn = connect()
         try:
             conn.executescript(SCHEMA)
+            _apply_migrations(conn)
         finally:
             conn.close()
         _initialized = True
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in _MIGRATIONS.items():
+        existing = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 def create_task(
@@ -138,6 +171,7 @@ def update_task(
     message: Optional[str] = None,
     result_r1: Optional[str] = None,
     result_r2: Optional[str] = None,
+    pair_count: Optional[int] = None,
 ) -> None:
     fields = ["updated_at = ?"]
     values: list = [utcnow()]
@@ -159,6 +193,9 @@ def update_task(
     if result_r2 is not None:
         fields.append("result_r2 = ?")
         values.append(result_r2)
+    if pair_count is not None:
+        fields.append("pair_count = ?")
+        values.append(pair_count)
     values.append(task_id)
     conn.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", values)
 
@@ -211,3 +248,44 @@ def non_terminal_task_ids(conn: sqlite3.Connection) -> list[str]:
             "SELECT id FROM tasks WHERE status NOT IN ('succeeded','failed','cancelled')"
         )
     ]
+
+
+def insert_trim(
+    conn: sqlite3.Connection,
+    trim_id: str,
+    task_id: str,
+    adapters_json: str,
+    total_pairs: int,
+    retained_pairs: int,
+    dropped_pairs: int,
+    result_path: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO trims (id, task_id, adapters, total_pairs, retained_pairs, "
+        "dropped_pairs, result_path, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            trim_id,
+            task_id,
+            adapters_json,
+            total_pairs,
+            retained_pairs,
+            dropped_pairs,
+            result_path,
+            utcnow(),
+        ),
+    )
+
+
+def get_trim(conn: sqlite3.Connection, trim_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM trims WHERE id = ?", (trim_id,)
+    ).fetchone()
+
+
+def all_trim_ids(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    """Return every registered (task_id, trim_id) pair."""
+    return {
+        (row["task_id"], row["id"])
+        for row in conn.execute("SELECT id, task_id FROM trims")
+    }

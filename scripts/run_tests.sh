@@ -10,9 +10,12 @@ PY=.venv/bin/python
 echo "=== functional + lifecycle tests ==="
 "$PY" -I tests/test_api.py
 
-echo
 echo "=== cancel/complete arbitration tests ==="
 "$PY" -I tests/test_cancel_race.py
+
+echo
+echo "=== adapter trimming tests ==="
+"$PY" -I tests/test_trim.py
 
 echo
 echo "ALL SHORT SELF-TESTS PASSED"

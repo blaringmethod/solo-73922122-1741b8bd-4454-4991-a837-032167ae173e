@@ -22,11 +22,18 @@ mk() { # file id seq side
 
 echo "== generating shuffled R1/R2 =="
 R1="$WORK/R1.fastq"; R2="$WORK/R2.fastq"
-for id in alpha beta gamma delta epsilon; do
-  mk "$R1" "$id" "ACGTACGTAC" 1
+SEQ1="ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"      # 40 bases
+SEQ2="TGCATGCATGCATGCATGCATGCATGCATGCATGCATGCA"      # 40 bases
+ADAPTER="AGATCGGAAGAGCACACGTCTGAACTCCAGTC"
+for id in alpha beta gamma; do
+  mk "$R1" "$id" "$SEQ1" 1
 done
+# delta: adapter prefix after 40 bases -> trimmed back to 40.
+mk "$R1" delta "${SEQ1}${ADAPTER:0:12}" 1
+# epsilon: adapter right after 10 bases -> both ends below 20 -> pair dropped.
+mk "$R1" epsilon "${SEQ1:0:10}${ADAPTER}" 1
 for id in epsilon gamma alpha delta beta; do   # deliberately shuffled
-  mk "$R2" "$id" "TGCATGCATG" 2
+  mk "$R2" "$id" "$SEQ2" 2
 done
 
 echo "== upload =="
@@ -67,6 +74,32 @@ print("R1 ids:", ids[0])
 print("R2 ids:", ids[1])
 assert ids[0] == ids[1] == ["alpha", "beta", "gamma", "delta", "epsilon"]
 print("OK: paired in R1 order")
+PY
+
+echo "== adapter trimming on the succeeded task =="
+TRIM=$(curl -fsS -X POST "$BASE_URL/tasks/$ID/trims" \
+  -H 'Content-Type: application/json' \
+  -d "{\"task_id\":\"$ID\",\"adapters\":[\"$ADAPTER\"]}")
+echo "$TRIM"
+TRIM_URL=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["download_url"])' <<<"$TRIM")
+curl -fsS "$BASE_URL$TRIM_URL" -o "$WORK/trimmed.zip"
+python3 - "$WORK/trimmed.zip" "$SEQ1" <<'PY'
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    summary = json.loads(archive.read("summary.json"))
+    r1 = archive.read("R1.fastq").decode()
+    r2 = archive.read("R2.fastq").decode()
+    hits = {name: len(archive.read(name).splitlines()) // 4
+            for name in ("R1.fastq", "R2.fastq")}
+print("trim summary:", json.dumps(summary))
+print("ZIP records:", hits)
+assert hits["R1.fastq"] == hits["R2.fastq"] == summary["retained_pairs"]
+assert summary["total_pairs"] == summary["retained_pairs"] + summary["dropped_pairs"]
+# delta carried a 12-base adapter prefix; it must be gone, epsilon is dropped
+assert "epsilon" not in r1 and "epsilon" not in r2, "dropped pair present"
+assert "delta" in r1 and "AGATCGGAAGAG" not in r1, "delta adapter not trimmed"
+assert sys.argv[2] + "\n" in r1, "delta read not trimmed back to 40 bases"
+print("OK: trimmed ZIP consistent, counts match, dropped pair absent")
 PY
 
 echo "== malformed input is rejected as a whole task =="

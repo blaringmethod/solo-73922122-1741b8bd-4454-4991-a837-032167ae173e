@@ -41,3 +41,29 @@ STAGE_PARSE = "parse"
 STAGE_VALIDATE = "validate"
 STAGE_PUBLISH = "publish"
 STAGE_DONE = "done"
+
+# ---- Adapter trimming -----------------------------------------------------
+# A trim request operates on one already-succeeded task. Input pairs are
+# capped at 200,000 and each read end must be 40..1000 bases long.
+TRIM_MAX_PAIRS = int(os.environ.get("FASTQ_TRIM_MAX_PAIRS", 200_000))
+TRIM_MIN_READ_LENGTH = int(os.environ.get("FASTQ_TRIM_MIN_READ_LENGTH", 40))
+TRIM_MAX_READ_LENGTH = int(os.environ.get("FASTQ_TRIM_MAX_READ_LENGTH", 1000))
+
+# Adapters: 1..4 sequences of 16..32 A/C/G/T bases.
+TRIM_MAX_ADAPTERS = 4
+TRIM_ADAPTER_MIN_LENGTH = 16
+TRIM_ADAPTER_MAX_LENGTH = 32
+
+# A hit requires at least 8 aligned bases and at most 1 mismatch against the
+# adapter prefix. The longest hit wins; a pair whose either end would be left
+# with fewer than 20 bases is dropped as a whole.
+TRIM_MIN_OVERLAP = 8
+TRIM_MAX_MISMATCHES = 1
+TRIM_MIN_RETAINED_LENGTH = 20
+
+# Per-request scratch space. Every trim request gets its own UUID directory
+# below this root so concurrent requests for the same task never share files.
+TRIM_TMP_DIRNAME = "trim_tmp"
+
+# Buffered output chunk for trimmed FASTQ files.
+TRIM_WRITE_BATCH_BYTES = 1024 * 1024

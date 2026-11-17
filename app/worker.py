@@ -166,6 +166,7 @@ def run_task(task_id: str) -> None:
 
         # We have won the arbitration; the temp files are complete and durable.
         promote_results(out_dir, tmp1, tmp2)
+        db.update_task(conn, task_id, pair_count=n1)
         db.delete_records(conn, task_id)
         # Inputs are no longer needed once results are durable.
         for stale in (r1_path, r2_path):
@@ -227,3 +228,36 @@ def recover_on_startup() -> dict[str, int]:
         conn.close()
     # Cancellation registry is empty in a fresh process.
     return {"recovered": recovered}
+
+
+def recover_trim_dirs() -> int:
+    """Delete trim directories that were interrupted before registration.
+
+    A trim directory is registered in the ``trims`` table only after its ZIP
+    is complete.  Any directory whose id is not registered is therefore the
+    remains of an interrupted request and can be removed safely; registered
+    results are never touched.
+    """
+    from .trim import discard_trim_dir
+
+    trims_root = config.TASKS_DIR
+    if not trims_root.is_dir():
+        return 0
+    conn = db.connect()
+    try:
+        registered = db.all_trim_ids(conn)
+    finally:
+        conn.close()
+
+    removed = 0
+    for task_path in trims_root.iterdir():
+        trims_dir = task_path / "trims"
+        if not trims_dir.is_dir():
+            continue
+        for trim_path in trims_dir.iterdir():
+            if not trim_path.is_dir():
+                continue
+            if (task_path.name, trim_path.name) not in registered:
+                discard_trim_dir(task_path.name, trim_path.name)
+                removed += 1
+    return removed
